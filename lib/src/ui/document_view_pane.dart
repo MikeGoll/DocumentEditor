@@ -5,8 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
+import 'package:document_editor/src/documents/adapters/document_adapter.dart';
+import 'package:document_editor/src/documents/document_format.dart';
 import 'package:document_editor/src/documents/document_state.dart';
 import 'package:document_editor/src/ui/pane_placeholder.dart';
+import 'package:path/path.dart' as p;
 
 /// Exposes the [DocumentState] to the widget subtree.
 ///
@@ -97,7 +100,7 @@ class _DocumentToolbar extends StatelessWidget {
           children: [
             _ToolbarButton(
               icon: Icons.folder_open,
-              tooltip: 'Open .txt file',
+              tooltip: 'Open .txt, .md or .docx file',
               onPressed: () => _pickFile(doc, context),
             ),
             const SizedBox(width: 12),
@@ -131,16 +134,26 @@ class _DocumentToolbar extends StatelessWidget {
               onPressed: quill.hasRedo ? quill.redo : null,
             ),
             const Spacer(),
+            // Flexible (not Expanded) so short titles keep their intrinsic
+            // width while long ones are constrained and elide instead of
+            // overflowing the Row.
             if (doc.fileName != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Text(
-                  doc.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyMedium,
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    doc.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium,
+                  ),
                 ),
               ),
+            _ToolbarButton(
+              icon: Icons.save_as_outlined,
+              tooltip: 'Save as… (change format)',
+              onPressed: doc.hasDocument ? () => _saveAs(doc, context) : null,
+            ),
             _ToolbarButton(
               icon: Icons.save_outlined,
               tooltip: 'Save (Ctrl/Cmd+S)',
@@ -155,7 +168,7 @@ class _DocumentToolbar extends StatelessWidget {
   Future<void> _pickFile(DocumentState doc, BuildContext context) async {
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['txt'],
+      allowedExtensions: const ['txt', 'md', 'markdown', 'docx'],
     );
     final path = files.isEmpty ? null : files.first.path;
     if (path == null || !context.mounted) return;
@@ -165,6 +178,8 @@ class _DocumentToolbar extends StatelessWidget {
       doc.reportError('Could not open file: ${e.message}');
     } on IOException catch (e) {
       doc.reportError('Could not open file: $e');
+    } on FormatException catch (e) {
+      doc.reportError('Could not open file: ${e.message}');
     }
   }
 
@@ -175,6 +190,74 @@ class _DocumentToolbar extends StatelessWidget {
       doc.reportError('Could not save file: ${e.message}');
     } on IOException catch (e) {
       doc.reportError('Could not save file: $e');
+    } on FormatException catch (e) {
+      doc.reportError('Could not save file: ${e.message}');
+    }
+  }
+
+  Future<void> _saveAs(DocumentState doc, BuildContext context) async {
+    DocumentFormat selected = doc.format;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('Save as…'),
+            content: RadioGroup<DocumentFormat>(
+              groupValue: selected,
+              onChanged: (format) {
+                if (format != null) {
+                  setState(() => selected = format);
+                }
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final format in DocumentFormat.values)
+                    RadioListTile<DocumentFormat>(
+                      value: format,
+                      title: Text(
+                        '${format.label} (.${format.fileExtension})',
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (confirmed != true || !context.mounted) return;
+    final format = selected;
+    // Serialize in the target format; the picker dialog writes these bytes
+    // to the location the user chooses.
+    final bytes =
+        DocumentAdapter.forFormat(format).serialize(doc.quill.document.toDelta());
+    final uri = await FilePicker.saveFile(
+      dialogTitle: 'Save as ${format.label}',
+      fileName:
+          '${p.basenameWithoutExtension(doc.fileName ?? 'document')}.${format.fileExtension}',
+      bytes: Uint8List.fromList(bytes),
+    );
+    if (uri == null || !context.mounted) return;
+    try {
+      await doc.saveAsWritten(uri.toFilePath(), format);
+    } on FileSystemException catch (e) {
+      doc.reportError('Could not save file: ${e.message}');
+    } on IOException catch (e) {
+      doc.reportError('Could not save file: $e');
+    } on FormatException catch (e) {
+      doc.reportError('Could not save file: ${e.message}');
     }
   }
 
@@ -213,7 +296,7 @@ class _DocumentBody extends StatelessWidget {
           return const PanePlaceholder(
             icon: Icons.description_outlined,
             label: 'No document open',
-            hint: 'Open a .txt file to start editing.',
+            hint: 'Open a .txt, .md or .docx file to start editing.',
           );
         }
         return QuillEditor.basic(

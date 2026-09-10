@@ -10,7 +10,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// Finds the toolbar [IconButton] whose tooltip is [tooltip].
 IconButton findButton(WidgetTester tester, String tooltip) {
-  final finder = find.ancestor(
+  // The IconButton is the child of the Tooltip that wraps it.
+  final finder = find.descendant(
     of: find.byWidgetPredicate((w) => w is Tooltip && w.message == tooltip),
     matching: find.byType(IconButton),
   );
@@ -67,7 +68,9 @@ void main() {
   testWidgets('opens a file and renders it in the editor', (tester) async {
     await pumpApp(tester);
 
-    await state.openFile(writeTemp('doc.txt', 'hello document\n'));
+    // Real file I/O does not complete inside testWidgets' FakeAsync zone;
+    // runAsync pumps the real event loop until the read finishes.
+    await tester.runAsync(() => state.openFile(writeTemp('doc.txt', 'hello document\n')));
     await tester.pump();
 
     expect(find.text('No document open'), findsNothing);
@@ -76,10 +79,27 @@ void main() {
     expect(find.text('doc.txt'), findsOneWidget);
   });
 
+  testWidgets('toolbar title elides long file names without overflowing',
+      (tester) async {
+    await pumpApp(tester);
+
+    final longName = '${'a' * 80}.txt';
+    await tester.runAsync(() => state.openFile(writeTemp(longName, 'content\n')));
+    await tester.pump();
+
+    // The title is not in a Flexible/Expanded, the Row overflows and the
+    // layout throws an exception. Regression guard for long file names.
+    expect(tester.takeException(), isNull);
+    expect(find.text(longName), findsOneWidget);
+    // The text is constrained by the Row instead of taking its intrinsic
+    // width (84 chars x 14px in the test font).
+    expect(tester.getRect(find.text(longName)).width, lessThan(600));
+  });
+
   testWidgets('save button enables when the document becomes dirty',
       (tester) async {
     await pumpApp(tester);
-    await state.openFile(writeTemp('dirty.txt', 'start\n'));
+    await tester.runAsync(() => state.openFile(writeTemp('dirty.txt', 'start\n')));
     await tester.pump();
 
     IconButton saveButton() => findButton(tester, 'Save (Ctrl/Cmd+S)');
@@ -102,7 +122,7 @@ void main() {
   testWidgets('bold toolbar button applies bold to the selection',
       (tester) async {
     await pumpApp(tester);
-    await state.openFile(writeTemp('bold.txt', 'word\n'));
+    await tester.runAsync(() => state.openFile(writeTemp('bold.txt', 'word\n')));
     await tester.pump();
 
     state.quill.updateSelection(
@@ -126,7 +146,7 @@ void main() {
       (tester) async {
     final path = writeTemp('shortcut.txt', 'before\n');
     await pumpApp(tester);
-    await state.openFile(path);
+    await tester.runAsync(() => state.openFile(path));
     await tester.pump();
 
     // Make a change on the last line.
@@ -139,15 +159,21 @@ void main() {
     await tester.pump();
     expect(state.dirty, isTrue);
 
-    // Focus the editor so the shortcut reaches the pane's binding,
-    // then fire Ctrl+S.
-    await tester.tap(find.byType(QuillEditor));
-    await tester.pump();
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.control);
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.control);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
+    // Focus the editor so the shortcut reaches the pane's binding, then
+    // fire Ctrl+S. The whole dispatch runs inside runAsync: the shortcut
+    // handler calls doc.save() (real file I/O) without awaiting it, and
+    // real I/O only completes when dispatched from the real event loop.
+    await tester.runAsync(() async {
+      await tester.tap(find.byType(QuillEditor));
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.control);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyS);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.control);
+      await tester.pump();
+      for (var i = 0; i < 200 && state.dirty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
 
     expect(state.dirty, isFalse,
         reason: 'Ctrl+S should save the document');
