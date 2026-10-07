@@ -9,6 +9,7 @@ import 'package:document_editor/src/documents/adapters/document_adapter.dart';
 import 'package:document_editor/src/documents/document_format.dart';
 import 'package:document_editor/src/documents/document_state.dart';
 import 'package:document_editor/src/ui/pane_placeholder.dart';
+import 'package:document_editor/src/ui/table_embed_builder.dart';
 import 'package:path/path.dart' as p;
 
 /// Exposes the [DocumentState] to the widget subtree.
@@ -303,6 +304,7 @@ class _DocumentBody extends StatelessWidget {
           controller: doc.quill,
           config: const QuillEditorConfig(
             padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
+            embedBuilders: [TableEmbedBuilder()],
           ),
         );
       },

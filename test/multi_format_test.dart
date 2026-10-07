@@ -5,6 +5,7 @@ import 'package:document_editor/src/documents/adapters/markdown_adapter.dart';
 import 'package:document_editor/src/documents/adapters/plain_text_adapter.dart';
 import 'package:document_editor/src/documents/document_format.dart';
 import 'package:document_editor/src/documents/document_state.dart';
+import 'package:document_editor/src/documents/table.dart';
 import 'package:flutter_quill/quill_delta.dart' show Delta;
 import 'package:flutter_test/flutter_test.dart';
 import 'dart:io' show Directory, File;
@@ -158,6 +159,55 @@ void main() {
       );
     });
 
+    test('parses tables into table block embeds without losing content', () {
+      const adapter = DocxAdapter();
+      final delta = adapter.parse(buildTableDocx());
+      final lines = deltaToLines(delta);
+
+      expect(lines.first.text, 'Before the table');
+      expect(lines.last.text, 'After the table');
+
+      final table = lines.firstWhere((l) => l.table != null).table!;
+      expect(table.rows.length, 2);
+      expect(table.rows[0].map((c) => c.toPlainText()).toList(),
+          ['Decision', 'Stakeholders', 'Why']);
+      expect(
+        table.rows[1].map((c) => c.toPlainText()).toList(),
+        ['Pump offboarding owner', 'Marcus', 'Overdue'],
+      );
+
+      // Inline formatting inside cells is preserved.
+      for (final cell in table.rows[0]) {
+        expect(
+          cell.toList()
+              .where((op) => op.data is String && op.data != '\n')
+              .every((op) => op.attributes?['bold'] == true),
+          isTrue,
+          reason: 'header cell should be bold',
+        );
+      }
+
+      // Plain text exports flatten the table but keep all its content.
+      expect(deltaToPlainText(delta), contains('Decision | Stakeholders | Why'));
+      expect(deltaToPlainText(delta),
+          contains('Pump offboarding owner | Marcus | Overdue'));
+    });
+
+    test('round-trips tables through docx serialization', () {
+      const adapter = DocxAdapter();
+      final parsed = adapter.parse(buildTableDocx());
+      final bytes = adapter.serialize(parsed);
+      final reparsed = adapter.parse(bytes);
+      final table =
+          deltaToLines(reparsed).firstWhere((l) => l.table != null).table!;
+
+      expect(table.rows.length, 2);
+      expect(
+        table.rows[1].map((c) => c.toPlainText()).toList(),
+        ['Pump offboarding owner', 'Marcus', 'Overdue'],
+      );
+    });
+
     test('throws FormatException for non-zip input', () {
       expect(
         () => const DocxAdapter().parse('not a zip at all'.codeUnits),
@@ -166,7 +216,69 @@ void main() {
     });
   });
 
+  group('MarkdownAdapter tables', () {
+    test('round-trips GFM tables through table embeds', () {
+      const adapter = MarkdownAdapter();
+      const source = '''
+Intro line.
+
+| Name | Role |
+| --- | --- |
+| Alice | **Engineer** |
+| Bob | Designer |
+
+Closing line.
+''';
+
+      final parsed = adapter.parse(source.codeUnits);
+      final lines = deltaToLines(parsed);
+      expect(lines.first.text, 'Intro line.');
+      expect(lines.last.text, 'Closing line.');
+
+      final table = lines.firstWhere((l) => l.table != null).table!;
+      expect(table.rows.length, 3);
+      expect(table.rows[0].map((c) => c.toPlainText()).toList(),
+          ['Name', 'Role']);
+      expect(table.rows[1].map((c) => c.toPlainText()).toList(),
+          ['Alice', 'Engineer']);
+
+      // Header cells and bold cells keep their bold attribute.
+      expect(
+        table.rows[0].map((c) => c.toDeltaOpsBold()),
+        everyElement(isTrue),
+        reason: 'GFM header cells should be bold',
+      );
+      expect(table.rows[1][1].toDeltaOpsBold(), isTrue);
+
+      final md = String.fromCharCodes(adapter.serialize(parsed));
+      expect(md, contains('| **Name** | **Role** |'));
+      expect(md, contains('| --- | --- |'));
+      expect(md, contains('| Alice | **Engineer** |'));
+
+      // Re-parsing the serialized markdown yields the same table.
+      final reparsed = deltaToLines(adapter.parse(md.codeUnits));
+      final table2 = reparsed.firstWhere((l) => l.table != null).table!;
+      expect(table2.rows.length, 3);
+      expect(table2.rows[1].map((c) => c.toPlainText()).toList(),
+          ['Alice', 'Engineer']);
+      expect(table2.rows[1][1].toDeltaOpsBold(), isTrue);
+    });
+  });
+
   group('cross-format round trip (txt -> md -> docx -> txt)', () {
+    test('carries a docx table through a markdown conversion', () {
+      const docx = DocxAdapter();
+      const md = MarkdownAdapter();
+
+      final viaMd = md.serialize(docx.parse(buildTableDocx()));
+      final table =
+          deltaToLines(md.parse(viaMd)).firstWhere((l) => l.table != null).table!;
+
+      expect(table.rows.length, 2);
+      expect(table.rows[0].map((c) => c.toPlainText()).toList(),
+          ['Decision', 'Stakeholders', 'Why']);
+    });
+
     test('preserves plain text content across all conversions', () {
       const txt = PlainTextAdapter();
       const md = MarkdownAdapter();
@@ -260,6 +372,43 @@ void main() {
       expect(state.dirty, isFalse);
     });
   });
+}
+
+/// Whether every text operation of a cell delta is bold.
+extension on Delta {
+  bool toDeltaOpsBold() => toList()
+      .where((op) => op.data is String && op.data != '\n')
+      .every((op) => op.attributes?['bold'] == true);
+}
+
+/// Builds a minimal .docx containing a two-row, three-cell table wrapped in
+/// ordinary paragraphs, to exercise table flattening in [DocxAdapter.parse].
+List<int> buildTableDocx() {
+  final archive = Archive();
+  const document = '''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:r><w:t>Before the table</w:t></w:r></w:p>
+<w:tbl>
+<w:tr>
+<w:tc><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Decision</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Stakeholders</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Why</w:t></w:r></w:p></w:tc>
+</w:tr>
+<w:tr>
+<w:tc><w:p><w:r><w:t>Pump offboarding owner</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:t>Marcus</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:t>Overdue</w:t></w:r></w:p></w:tc>
+</w:tr>
+</w:tbl>
+<w:p><w:r><w:t>After the table</w:t></w:r></w:p>
+<w:sectPr/>
+</w:body>
+</w:document>
+''';
+  archive.add(ArchiveFile.string('word/document.xml', document));
+  return ZipEncoder().encodeBytes(archive);
 }
 
 /// Builds a small .docx entirely by hand (independent of the app's serializer)

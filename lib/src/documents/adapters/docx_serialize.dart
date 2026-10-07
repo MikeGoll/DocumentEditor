@@ -263,7 +263,12 @@ extension on DocxAdapter {
           namespaceUri: w,
           nest: () {
             for (final line in lines) {
-              _paragraph(b, line, w);
+              final table = line.table;
+              if (table != null) {
+                _table(b, table, w);
+              } else {
+                _paragraph(b, line, w);
+              }
             }
             b.element('sectPr', namespaceUri: w);
           },
@@ -271,6 +276,88 @@ extension on DocxAdapter {
       },
     );
     return b.buildDocument().toXmlString();
+  }
+
+  /// Writes a table line as a `<w:tbl>` element with a uniform grid
+  /// layout. Cell deltas are written as regular paragraphs.
+  void _table(XmlBuilder b, TableData table, String w) {
+    const usableWidth = 9360; // twips: 6.5in at 1440 twips/in
+    final columns = math.max(table.columnCount, 1);
+    final columnWidth = usableWidth ~/ columns;
+
+    b.element(
+      'tbl',
+      namespaceUri: w,
+      nest: () {
+        b.element(
+          'tblPr',
+          namespaceUri: w,
+          nest: () {
+            b.element(
+              'tblW',
+              namespaceUri: w,
+              attributes: const {'w:type': 'auto', 'w:w': '0'},
+            );
+            b.element(
+              'tblBorders',
+              namespaceUri: w,
+              nest: () {
+                for (final edge in const [
+                  'top',
+                  'left',
+                  'bottom',
+                  'right',
+                  'insideH',
+                  'insideV',
+                ]) {
+                  b.element(
+                    edge,
+                    namespaceUri: w,
+                    attributes: const {
+                      'w:val': 'single',
+                      'w:sz': '4',
+                      'w:space': '0',
+                      'w:color': 'auto',
+                    },
+                  );
+                }
+              },
+            );
+          },
+        );
+        b.element('tblGrid', namespaceUri: w, nest: () {
+          for (var i = 0; i < columns; i++) {
+            b.element('gridCol', namespaceUri: w,
+                attributes: {'w:w': '$columnWidth'});
+          }
+        });
+        for (final row in table.rows) {
+          b.element('tr', namespaceUri: w, nest: () {
+            for (var i = 0; i < columns; i++) {
+              final cell = i < row.length ? row[i] : Delta();
+              b.element('tc', namespaceUri: w, nest: () {
+                b.element('tcPr', namespaceUri: w, nest: () {
+                  b.element(
+                    'tcW',
+                    namespaceUri: w,
+                    attributes: {'w:type': 'dxa', 'w:w': '$columnWidth'},
+                  );
+                });
+                // A table cell must contain at least one paragraph.
+                final cellLines = deltaToLines(cell);
+                if (cellLines.isEmpty) {
+                  _paragraph(b, const DeltaLine([]), w);
+                } else {
+                  for (final line in cellLines) {
+                    _paragraph(b, line, w);
+                  }
+                }
+              });
+            }
+          });
+        }
+      },
+    );
   }
 
   void _paragraph(XmlBuilder b, DeltaLine line, String w) {

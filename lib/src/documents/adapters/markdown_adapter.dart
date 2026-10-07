@@ -4,6 +4,7 @@ import 'package:flutter_quill/quill_delta.dart';
 import 'package:markdown/markdown.dart' as md;
 
 import '../document_format.dart';
+import '../table.dart';
 import 'delta_lines.dart';
 import 'document_adapter.dart';
 
@@ -48,10 +49,40 @@ class MarkdownAdapter implements DocumentAdapter {
     final out = StringBuffer();
     var orderedCounter = 0;
     var inCodeFence = false;
+    var lastWasTable = false;
+
+    // A blank line separates a table from whatever follows it; without it
+    // the next line would be absorbed into the table as a new row.
+    void closeTableGap() {
+      if (lastWasTable) {
+        out.writeln();
+        lastWasTable = false;
+      }
+    }
 
     for (final line in deltaToLines(delta)) {
+      final table = line.table;
+      if (table != null) {
+        // An open code fence would swallow the table rows; close it first.
+        if (inCodeFence) {
+          out.writeln('```');
+          inCodeFence = false;
+        }
+        // GitHub-flavored table. The first row becomes the header; cells
+        // are flattened to a single line (GFM cells cannot span lines).
+        out.writeln();
+        for (var i = 0; i < table.rows.length; i++) {
+          if (i == 1) {
+            out.writeln('| ${List.filled(table.columnCount, '---').join(' | ')} |');
+          }
+          out.writeln('| ${_tableRow(table.rows[i]).join(' | ')} |');
+        }
+        lastWasTable = true;
+        continue;
+      }
       if (line.block['code-block'] == true) {
         if (!inCodeFence) {
+          closeTableGap();
           out.writeln('```');
           inCodeFence = true;
         }
@@ -62,6 +93,7 @@ class MarkdownAdapter implements DocumentAdapter {
         out.writeln('```');
         inCodeFence = false;
       }
+      closeTableGap();
       orderedCounter = 0;
 
       final content = _inline(line.runs);
@@ -83,6 +115,34 @@ class MarkdownAdapter implements DocumentAdapter {
       out.writeln('```');
     }
     return utf8.encode(out.toString());
+  }
+
+  /// Renders one cell delta as inline Markdown: cell lines are joined
+  /// with a space because GFM cells cannot contain line breaks. Header
+  /// cells were stored with a bold attribute on parse, so [_inline] already
+  /// re-emits the boldness.
+  String _cell(Delta cell) {
+    final lines = deltaToLines(cell);
+    return lines.map(_inlineCell).join(' ');
+  }
+
+  String _inlineCell(DeltaLine line) {
+    if (line.table != null) {
+      // Nested tables: flatten to their plain text.
+      return line.table!
+          .rows
+          .map((row) =>
+              row.map((c) => c.toPlainText().replaceAll('\n', ' ')).join(' | '))
+          .join(' ');
+    }
+    return _inline(line.runs);
+  }
+
+  /// Renders one table row as the list of its Markdown cell strings.
+  List<String> _tableRow(List<Delta> row) {
+    return [
+      for (final cell in row) _cell(cell),
+    ];
   }
 
   /// Renders the styled runs of a line as inline Markdown.
@@ -205,6 +265,42 @@ class MarkdownAdapter implements DocumentAdapter {
               DeltaLine([StyledText(codeLine)], {'code-block': true}),
             );
           }
+        }
+      case 'table':
+        // GFM tables parse to table > thead/tbody > tr > th/td.
+        final rows = <List<Delta>>[];
+        void collectRows(md.Element el) {
+          for (final child in el.children ?? const <md.Node>[]) {
+            if (child is! md.Element) continue;
+            if (child.tag == 'tr') {
+              final cells = <Delta>[];
+              for (final cellEl in child.children ?? const <md.Node>[]) {
+                if (cellEl is! md.Element) continue;
+                if (cellEl.tag != 'td' && cellEl.tag != 'th') continue;
+                final isHeader = cellEl.tag == 'th';
+                final runs = _inlineToRuns(cellEl.children ?? const []);
+                final cell = Delta();
+                for (final run in runs) {
+                  final attrs = isHeader
+                      ? {'bold': true, ...run.attributes}
+                      : run.attributes;
+                  cell.insert(
+                    run.text,
+                    attrs.isEmpty ? null : attrs,
+                  );
+                }
+                cells.add(cell);
+              }
+              if (cells.isNotEmpty) rows.add(cells);
+            } else {
+              collectRows(child);
+            }
+          }
+        }
+
+        collectRows(node);
+        if (rows.isNotEmpty) {
+          lines.add(DeltaLine(const [], const {}, TableData(rows)));
         }
       case 'hr':
         // No Quill equivalent; skip.

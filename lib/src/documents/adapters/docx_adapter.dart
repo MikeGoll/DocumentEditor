@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:archive/archive.dart';
 import 'package:collection/collection.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_quill/quill_delta.dart';
 import 'package:xml/xml.dart';
 
 import '../document_format.dart';
+import '../table.dart';
 import 'delta_lines.dart';
 import 'document_adapter.dart';
 
@@ -20,6 +22,7 @@ part 'docx_serialize.dart';
 /// Supported round-trip formatting:
 ///  - inline: bold, italic, underline, strike
 ///  - block:  headings 1-6, bullet and ordered lists
+///  - tables: preserved as table block embeds
 ///
 /// Everything else is reduced to plain text so content is never lost.
 class DocxAdapter implements DocumentAdapter {
@@ -69,9 +72,23 @@ class DocxAdapter implements DocumentAdapter {
     final root = docXml.rootElement;
     final body =
         root.findElements('body', namespaceUri: _wordNs).firstOrNull;
-    for (final p in (body ?? root).findElements('p', namespaceUri: _wordNs)) {
-      lines.add(_parseParagraph(p, numIdToType));
+    void appendContent(XmlElement container) {
+      for (final child in container.children.whereType<XmlElement>()) {
+        switch (child.name.local) {
+          case 'p':
+            lines.add(_parseParagraph(child, numIdToType));
+          case 'tbl':
+            lines.add(_parseTable(child, numIdToType));
+          case 'sdt':
+          case 'sdtContent':
+          case 'ins':
+            appendContent(child);
+          // Anything else (e.g. w:sectPr) carries no text content.
+        }
+      }
     }
+
+    appendContent(body ?? root);
     return linesToDelta(lines);
   }
 
@@ -205,6 +222,52 @@ class DocxAdapter implements DocumentAdapter {
       }
     }
     return DeltaLine(runs, block);
+  }
+
+  /// Parses a table into a single table line. Each cell becomes the delta
+  /// of its paragraphs, preserving inline formatting; nested tables are
+  /// flattened into the cell's text so no content is lost.
+  DeltaLine _parseTable(XmlElement tbl, Map<int, String> numIdToType) {
+    final rows = <List<Delta>>[];
+    for (final tr in tbl.findElements('tr', namespaceUri: _wordNs)) {
+      final cells = <Delta>[];
+
+      void appendCell(XmlElement tc) {
+        final cell = Delta();
+        for (final child in tc.children.whereType<XmlElement>()) {
+          switch (child.name.local) {
+            case 'p':
+              final line = _parseParagraph(child, numIdToType);
+              for (final run in line.runs) {
+                cell.insert(
+                  run.text,
+                  run.attributes.isEmpty ? null : Map.of(run.attributes),
+                );
+              }
+            case 'tbl':
+              // Nested tables: flatten into the cell as pipe-separated
+              // plain text.
+              final nested = _parseTable(child, numIdToType).table!;
+              final text = nested
+                  .rows
+                  .map((row) =>
+                      row.map((c) => c.toPlainText()).join(' | '))
+                  .join('\n');
+              cell.insert(text);
+            case 'sdt':
+            case 'sdtContent':
+              appendCell(child);
+          }
+        }
+        cells.add(cell);
+      }
+
+      for (final tc in tr.findElements('tc', namespaceUri: _wordNs)) {
+        appendCell(tc);
+      }
+      if (cells.isNotEmpty) rows.add(cells);
+    }
+    return DeltaLine(const [], const {}, TableData(rows));
   }
 
   /// The runs of a paragraph, descending into hyperlinks, smart tags and
