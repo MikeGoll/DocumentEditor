@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:document_editor/src/chat/chat_controller.dart';
+import 'package:document_editor/src/chat/chat_history_store.dart';
 import 'package:document_editor/src/documents/document_state.dart';
 import 'package:document_editor/src/ui/document_view_pane.dart';
 import 'package:document_editor/src/ui/main_layout.dart';
@@ -21,13 +23,19 @@ IconButton findButton(WidgetTester tester, String tooltip) {
 void main() {
   late Directory tempDir;
   late DocumentState state;
+  late ChatController chat;
 
   setUp(() {
     tempDir = Directory.systemTemp.createTempSync('document_editor_widget');
     state = DocumentState();
+    chat = ChatController(
+      document: state,
+      store: ChatHistoryStore(baseDirectory: tempDir.path),
+    );
   });
 
   tearDown(() {
+    chat.dispose();
     state.dispose();
     tempDir.deleteSync(recursive: true);
   });
@@ -46,7 +54,7 @@ void main() {
       MaterialApp(
         home: DocumentScope(
           document: state,
-          child: const MainLayout(),
+          child: MainLayout(chat: chat),
         ),
       ),
     );

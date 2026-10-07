@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 /// Floating button shown on narrow screens to expand the collapsed chat pane.
 ///
-/// When [onPressed] is null the button is disabled (e.g. the chat overlay
-/// is already open).
+/// [MainLayout] hides the button entirely while the chat overlay is open, so
+/// it never covers (and swallows taps from) the chat input.
 class ExpandChatButton extends StatelessWidget {
   const ExpandChatButton({super.key, required this.onPressed});
 
