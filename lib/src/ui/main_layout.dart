@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:document_editor/src/chat/chat_controller.dart';
+import 'package:document_editor/src/tools/supporting_files.dart';
 import 'package:document_editor/src/ui/agent_chat_pane.dart';
 import 'package:document_editor/src/ui/document_view_pane.dart';
 import 'package:document_editor/src/ui/expand_chat_button.dart';
@@ -18,10 +19,13 @@ const double kChatPaneWidth = 360;
 /// chat sit side-by-side. On narrower windows the chat pane collapses and a
 /// floating button appears that overlays the chat on top of the document.
 class MainLayout extends StatefulWidget {
-  const MainLayout({super.key, required this.chat});
+  const MainLayout({super.key, required this.chat, this.supportingFiles});
 
   /// Chat state shared by both chat pane layouts.
   final ChatController chat;
+
+  /// Files attached for the agent; enables the chat's attach button.
+  final SupportingFiles? supportingFiles;
 
   @override
   State<MainLayout> createState() => _MainLayoutState();
@@ -55,7 +59,10 @@ class _MainLayoutState extends State<MainLayout> {
                 const VerticalDivider(width: 1),
                 SizedBox(
                   width: kChatPaneWidth,
-                  child: AgentChatPane(chat: widget.chat),
+                  child: AgentChatPane(
+                    chat: widget.chat,
+                    supportingFiles: widget.supportingFiles,
+                  ),
                 ),
               ],
             );
@@ -73,6 +80,7 @@ class _MainLayoutState extends State<MainLayout> {
                   width: min(constraints.maxWidth - 24, kChatPaneWidth),
                   child: AgentChatPane(
                     chat: widget.chat,
+                    supportingFiles: widget.supportingFiles,
                     onClose: _hideChatOverlay,
                   ),
                 ),

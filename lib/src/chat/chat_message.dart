@@ -5,6 +5,10 @@ enum ChatRole {
 
   /// A message produced by the agent (LLM integration arrives in Plan 07).
   agent,
+
+  /// A transcript entry recording an action the agent took with a tool
+  /// (e.g. "Edited the document"). Not sent back to the model.
+  tool,
 }
 
 /// A single chat message.
@@ -30,6 +34,17 @@ class ChatMessage {
 
   /// Creation time, used for display ordering.
   final DateTime timestamp;
+
+  /// Returns a copy with [text] replaced (used while a streamed agent
+  /// reply is still arriving).
+  ChatMessage copyWith({String? text}) {
+    return ChatMessage(
+      id: id,
+      role: role,
+      text: text ?? this.text,
+      timestamp: timestamp,
+    );
+  }
 
   /// Creates a new message with a generated id and [timestamp] (defaults to
   /// now).

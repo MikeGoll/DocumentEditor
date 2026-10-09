@@ -1,7 +1,10 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:document_editor/src/chat/chat_controller.dart';
 import 'package:document_editor/src/chat/chat_message.dart';
+import 'package:document_editor/src/tools/supporting_files.dart';
+import 'package:path/path.dart' as p;
 
 /// The agent chat pane (right side of the app).
 ///
@@ -9,17 +12,26 @@ import 'package:document_editor/src/chat/chat_message.dart';
 /// narrow windows it is shown as an overlay driven by [MainLayout] and an
 /// [onClose] callback lets the user dismiss the overlay.
 ///
-/// Messages are stored locally per document via [ChatController]; no LLM
-/// connectivity is required.
+/// Messages are stored locally per document via [ChatController]. When an
+/// agent responder is configured, replies stream in live and a progress
+/// indicator is shown while the provider is responding. Actions the agent
+/// takes with its tools appear as compact rows between messages.
+///
+/// When [supportingFiles] is given, a paperclip button lets the user attach
+/// files the agent may read; attached files are listed as removable chips.
 class AgentChatPane extends StatefulWidget {
   const AgentChatPane({
     super.key,
     required this.chat,
+    this.supportingFiles,
     this.onClose,
   });
 
   /// Chat state for the current document.
   final ChatController chat;
+
+  /// Files the user has attached for the agent, if attaching is enabled.
+  final SupportingFiles? supportingFiles;
 
   /// When non-null a close button is shown (overlay mode on narrow screens).
   final VoidCallback? onClose;
@@ -54,6 +66,13 @@ class _AgentChatPaneState extends State<AgentChatPane> {
                   ),
                 ),
               ),
+              if (widget.supportingFiles != null)
+                IconButton(
+                  onPressed: _attachFiles,
+                  icon: const Icon(Icons.attach_file),
+                  tooltip: 'Attach supporting files for the agent',
+                  visualDensity: VisualDensity.compact,
+                ),
               IconButton(
                 onPressed: () => widget.chat.reset(),
                 icon: const Icon(Icons.delete_sweep_outlined),
@@ -70,16 +89,85 @@ class _AgentChatPaneState extends State<AgentChatPane> {
             ],
           ),
         ),
+        if (widget.supportingFiles case final files?)
+          _SupportingFilesBar(files: files),
         Expanded(
           child: ListenableBuilder(
             listenable: widget.chat,
-            builder: (context, _) => widget.chat.messages.isEmpty
-                ? const _ChatEmptyState()
-                : _MessageList(messages: widget.chat.messages),
+            builder: (context, _) => Column(
+              children: [
+                Expanded(
+                  child: widget.chat.messages.isEmpty
+                      ? const _ChatEmptyState()
+                      : _MessageList(messages: widget.chat.messages),
+                ),
+                if (widget.chat.isResponding) const _RespondingIndicator(),
+                _ChatInputBar(
+                  chat: widget.chat,
+                  responding: widget.chat.isResponding,
+                ),
+              ],
+            ),
           ),
         ),
-        _ChatInputBar(chat: widget.chat),
       ],
+    );
+  }
+
+  Future<void> _attachFiles() async {
+    final files = await FilePicker.pickFiles(
+      dialogTitle: 'Attach supporting files',
+    );
+    final paths = [
+      for (final file in files)
+        if (file.path case final path?) path,
+    ];
+    if (paths.isNotEmpty) widget.supportingFiles?.addAll(paths);
+  }
+}
+
+/// Removable chips for the attached supporting files (hidden when none).
+class _SupportingFilesBar extends StatelessWidget {
+  const _SupportingFilesBar({required this.files});
+
+  final SupportingFiles files;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return ListenableBuilder(
+      listenable: files,
+      builder: (context, _) {
+        if (files.isEmpty) return const SizedBox.shrink();
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: theme.dividerColor)),
+          ),
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final path in files.paths)
+                Tooltip(
+                  message: path,
+                  child: InputChip(
+                    avatar: const Icon(Icons.description_outlined, size: 16),
+                    label: Text(
+                      p.basename(path),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onDeleted: () => files.remove(path),
+                    deleteButtonTooltipMessage: 'Remove',
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -107,13 +195,46 @@ class _ChatEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Type a message below to start a local conversation.',
+              'Type a message below to ask the agent about the document.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.disabledColor),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Small "agent is typing" row shown while a reply is streaming.
+class _RespondingIndicator extends StatelessWidget {
+  const _RespondingIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            'Agent is responding…',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: theme.disabledColor),
+          ),
+        ],
       ),
     );
   }
@@ -173,6 +294,7 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    if (message.role == ChatRole.tool) return _ToolActivityRow(message: message);
     final isUser = message.role == ChatRole.user;
     final scheme = theme.colorScheme;
 
@@ -221,13 +343,48 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
+/// A compact transcript row recording an action the agent took.
+class _ToolActivityRow extends StatelessWidget {
+  const _ToolActivityRow({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = theme.colorScheme.onSurfaceVariant;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+      child: Row(
+        children: [
+          Icon(Icons.auto_fix_high, size: 14, color: color),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              message.text,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: color,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Bottom input row: a text field plus a send button.
 ///
 /// Enter (or the send button) submits the message to [chat].
 class _ChatInputBar extends StatefulWidget {
-  const _ChatInputBar({required this.chat});
+  const _ChatInputBar({required this.chat, required this.responding});
 
   final ChatController chat;
+
+  /// Whether an agent reply is in flight; the send button is disabled.
+  final bool responding;
 
   @override
   State<_ChatInputBar> createState() => _ChatInputBarState();
@@ -243,6 +400,7 @@ class _ChatInputBarState extends State<_ChatInputBar> {
   }
 
   void _submit() {
+    if (widget.responding) return;
     final text = _controller.text;
     if (text.trim().isEmpty) return;
     _controller.clear();
@@ -277,9 +435,11 @@ class _ChatInputBarState extends State<_ChatInputBar> {
           const SizedBox(width: 8),
           IconButton(
             key: const ValueKey('chat-send'),
-            onPressed: _submit,
+            onPressed: widget.responding ? null : _submit,
             icon: const Icon(Icons.send),
-            tooltip: 'Send message',
+            tooltip: widget.responding
+                ? 'Wait for the agent to finish'
+                : 'Send message',
             visualDensity: VisualDensity.compact,
           ),
         ],

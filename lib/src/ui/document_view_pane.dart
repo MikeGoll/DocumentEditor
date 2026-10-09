@@ -9,6 +9,7 @@ import 'package:document_editor/src/documents/adapters/document_adapter.dart';
 import 'package:document_editor/src/documents/document_format.dart';
 import 'package:document_editor/src/documents/document_state.dart';
 import 'package:document_editor/src/ui/pane_placeholder.dart';
+import 'package:document_editor/src/ui/settings/settings_screen.dart';
 import 'package:document_editor/src/ui/table_embed_builder.dart';
 import 'package:path/path.dart' as p;
 
@@ -159,6 +160,11 @@ class _DocumentToolbar extends StatelessWidget {
               icon: Icons.save_outlined,
               tooltip: 'Save (Ctrl/Cmd+S)',
               onPressed: doc.dirty ? () => _save(doc) : null,
+            ),
+            _ToolbarButton(
+              icon: Icons.settings_outlined,
+              tooltip: 'Agent settings',
+              onPressed: () => showSettingsDialog(context),
             ),
           ],
         ),
